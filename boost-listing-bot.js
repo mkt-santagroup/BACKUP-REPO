@@ -10,11 +10,15 @@ const TOP_N = 20;
 const MAX_NAME_LEN = 22; // truncamento p/ caber dentro do limite do embed
 const EMBED_COLOR = 0x2b2d31; // cinza-escuro do tema do Discord
 const ALERT_COLOR = 0xff3333; // vermelho p/ alertas de rush
-const MSG_ID_FILE = path.join(__dirname, '.boost-message-id');
-const POSICOES_MSG_FILE = path.join(__dirname, '.posicoes-message-id');
-const BOOSTS_DELTAS_MSG_FILE = path.join(__dirname, '.boosts-deltas-message-id');
-const RANKING_STATE_FILE = path.join(__dirname, '.boost-rankings-state.json');
-const LAST_GOOD_FILE = path.join(__dirname, '.last-good-rankings.json');
+// Diretorio onde os arquivos de estado sao gravados. No Railway, aponte
+// DATA_DIR para o mount path do volume (ex: /data) p/ persistir entre deploys.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const MSG_ID_FILE = path.join(DATA_DIR, '.boost-message-id');
+const POSICOES_MSG_FILE = path.join(DATA_DIR, '.posicoes-message-id');
+const BOOSTS_DELTAS_MSG_FILE = path.join(DATA_DIR, '.boosts-deltas-message-id');
+const RANKING_STATE_FILE = path.join(DATA_DIR, '.boost-rankings-state.json');
+const LAST_GOOD_FILE = path.join(DATA_DIR, '.last-good-rankings.json');
 const MIN_SERVERS_THRESHOLD = 10; // abaixo disso, considera resposta incompleta e usa cache
 
 // Limites do detector de rush no podio
