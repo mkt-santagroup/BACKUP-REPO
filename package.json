@@ -1,14 +1,17 @@
 {
-  "name": "fivemboosts-backup-bot",
+  "name": "fivemboosts-bots",
   "version": "1.0.0",
-  "description": "Backup automatico de repo Git para Discord",
+  "description": "Bots SantaGroup: backup do repo de API + listagem de boosts FiveM no Discord",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "once": "node index.js --once"
+    "once": "node index.js --once",
+    "boosts": "node boost-listing-bot.js",
+    "boosts:once": "node boost-listing-bot.js --once"
   },
   "dependencies": {
     "axios": "^1.7.7",
+    "discord.js": "^14.26.4",
     "dotenv": "^16.4.5",
     "form-data": "^4.0.1",
     "node-cron": "^3.0.3"

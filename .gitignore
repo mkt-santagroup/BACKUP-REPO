@@ -2,3 +2,8 @@ node_modules/
 .env
 backups/
 *.zip
+.boost-message-id
+.posicoes-message-id
+.boosts-deltas-message-id
+.boost-rankings-state.json
+.last-good-rankings.json
