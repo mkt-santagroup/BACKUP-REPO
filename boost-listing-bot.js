@@ -84,10 +84,12 @@ const {
   RUSH_CHANNEL_ID,
   POSICOES_CHANNEL_ID,
   BOOSTS_DELTAS_CHANNEL_ID,
+  DAILY_LIST_CHANNEL_ID,
   ZAPI_BASE_URL,
   ZAPI_CLIENT_TOKEN,
   ZAPI_NOTIFICATION_NUMBERS,
   BOOSTS_LIST_CRON = '* * * * *',
+  DAILY_LIST_CRON = '0 21 * * *',
   BACKUP_TIMEZONE = 'America/Sao_Paulo',
 } = process.env;
 
@@ -114,7 +116,7 @@ const SANTA_BY_COUNTRY = {
   PT: ['MALTA RP'],
   ES: ['REAL RP', 'PRIME RP'],
   US: ['LIBERTY 99', 'DISTRICT 99'],
-  FR: [],
+  FR: ['GOAT'],
 };
 
 function log(msg) {
@@ -865,10 +867,9 @@ async function detectRushers(client, rankings, previous, now) {
     await channel.send({ embeds: [embed] });
     log(`  🚨 RUSH ${c.label}: ${rushers.length} rusher(s), ${losers.length} doador(es)`);
 
-    // Dispara DM desesperada para todo mundo com o cargo
+    // DM com o MESMO embed que foi pro canal (identico)
     try {
-      const dmContent = buildRushDmMessage(c, top1, rushers, now);
-      const { sent, failed } = await dmRoleMembers(client, RUSH_DM_ROLE_ID, dmContent);
+      const { sent, failed } = await dmRoleMembers(client, RUSH_DM_ROLE_ID, { embeds: [embed] });
       log(`  📩 DM rush enviada para ${sent} membros (${failed} falhas)`);
     } catch (err) {
       log(`  Erro ao enviar DMs de rush: ${err.message}`);
@@ -876,28 +877,7 @@ async function detectRushers(client, rankings, previous, now) {
   }
 }
 
-function buildRushDmMessage(country, top1, rushers, now) {
-  const header =
-    `🚨🚨🚨 **SOCORRO!!! RUSH NA NOSSA CIDADE!!!** 🚨🚨🚨\n\n` +
-    `${country.flag} **${country.label}** — alguém tá colando em **${top1.city}**!!!\n\n` +
-    `🟡 Nossa: **${top1.city}** — \`${top1.boosts}\` boosts\n\n`;
-
-  const lines = rushers.map((r) => {
-    const pct = (r.gapPct * 100).toFixed(1);
-    return (
-      `🔴 **${r.city}** RUSHOU BOOST NA GENTE!!\n` +
-      `   └ \`${r.boosts}\` boosts (+${r.gain}) — a apenas **${pct}%** de nos alcançar (gap ${r.diff})`
-    );
-  });
-
-  const footer =
-    `\n\n⚠️ **PRECISAMOS DE BOOST AGORA OU PERDEMOS O TOPO!!!** ⚠️\n` +
-    `_Alerta gerado as ${now}_`;
-
-  return header + lines.join('\n\n') + footer;
-}
-
-async function dmRoleMembers(client, roleId, content) {
+async function dmRoleMembers(client, roleId, payload) {
   let sent = 0;
   let failed = 0;
   for (const guild of client.guilds.cache.values()) {
@@ -919,7 +899,7 @@ async function dmRoleMembers(client, roleId, content) {
     for (const member of role.members.values()) {
       if (member.user.bot) continue;
       try {
-        await member.send(content);
+        await member.send(payload);
         sent++;
       } catch (err) {
         failed++;
@@ -930,6 +910,28 @@ async function dmRoleMembers(client, roleId, content) {
     return { sent, failed }; // achou o role neste guild, nao precisa olhar os outros
   }
   return { sent, failed };
+}
+
+async function postDailyList(client) {
+  log('Postando listagem diaria...');
+  const rankings = await fetchAllRankings();
+  const embed = buildEmbed(rankings);
+  const payload = { embeds: [embed] };
+
+  const channel = await client.channels.fetch(DAILY_LIST_CHANNEL_ID);
+  if (!channel) {
+    throw new Error(`Canal daily list ${DAILY_LIST_CHANNEL_ID} nao encontrado`);
+  }
+  await channel.send(payload);
+  log(`Listagem diaria postada em ${DAILY_LIST_CHANNEL_ID}.`);
+
+  // Mesmo embed por DM pra quem tem o cargo de boost
+  try {
+    const { sent, failed } = await dmRoleMembers(client, RUSH_DM_ROLE_ID, payload);
+    log(`  📩 Daily list por DM: ${sent} enviadas, ${failed} falhas`);
+  } catch (err) {
+    log(`  Erro nas DMs da daily list: ${err.message}`);
+  }
 }
 
 async function updateListing(client) {
@@ -1040,6 +1042,21 @@ async function main() {
       { timezone: BACKUP_TIMEZONE },
     );
     log(`Agendado: "${BOOSTS_LIST_CRON}" (TZ ${BACKUP_TIMEZONE})`);
+
+    if (DAILY_LIST_CHANNEL_ID) {
+      cron.schedule(
+        DAILY_LIST_CRON,
+        async () => {
+          try {
+            await postDailyList(client);
+          } catch (err) {
+            log(`Erro no daily list: ${err.message}`);
+          }
+        },
+        { timezone: BACKUP_TIMEZONE },
+      );
+      log(`Daily list agendada: "${DAILY_LIST_CRON}" -> canal ${DAILY_LIST_CHANNEL_ID} (TZ ${BACKUP_TIMEZONE})`);
+    }
   });
 
   await client.login(DISCORD_BOT_TOKEN);
