@@ -98,13 +98,17 @@ const ZAPI_NUMBERS = (ZAPI_NOTIFICATION_NUMBERS || '')
   .map((n) => n.trim())
   .filter(Boolean);
 
+// extraLocales: locales adicionais a buscar e mergear. Util quando server tagga
+// `vars.locale` com codigo nao-padrao (ex: Trappin UK usa "en-UK" em vez do
+// ISO "en-GB"). Resultados dedupados por nome de cidade, maior boost vence.
 const COUNTRIES = [
   { flag: '🇧🇷', label: 'BR', code: 'BR', locale: 'pt-BR' },
-  { flag: '🇬🇧', label: 'UK', code: 'GB', locale: 'en-GB' },
+  { flag: '🇬🇧', label: 'UK', code: 'GB', locale: 'en-GB', extraLocales: ['en-UK'] },
   { flag: '🇵🇹', label: 'PT', code: 'PT', locale: 'pt-PT' },
   { flag: '🇪🇸', label: 'ES', code: 'ES', locale: 'es-ES' },
   { flag: '🇺🇸', label: 'US', code: 'US', locale: 'en-US' },
   { flag: '🇫🇷', label: 'FR', code: 'FR', locale: 'fr-FR' },
+  { flag: '🇸🇦', label: 'SA', code: 'SA', locale: 'ar-SA' },
 ];
 
 // Cidades do SantaGroup por pais (match parcial, case-insensitive).
@@ -117,6 +121,7 @@ const SANTA_BY_COUNTRY = {
   ES: ['REAL RP', 'PRIME RP'],
   US: ['LIBERTY 99', 'DISTRICT 99'],
   FR: ['GOAT'],
+  SA: ['ORIZON'],
 };
 
 function log(msg) {
@@ -148,6 +153,14 @@ function cleanCityName(raw = '') {
   );
   // Zero-width joiners, variation selectors, replacement char
   s = s.replace(/[\u{200B}-\u{200F}\u{FE00}-\u{FE0F}\u{FFFD}]/gu, '');
+
+  // 4.5. Strip texto Arabe (servers da SA misturam nome latim com promo em arabe
+  // tipo "Orizon RP🡺تنطلق الآن 19 دقائق🡸" = "lanca em 19 min"). Strip tambem
+  // dos blocos de presentation forms / arabic supplement.
+  s = s.replace(
+    /[\u{0600}-\u{06FF}\u{0750}-\u{077F}\u{08A0}-\u{08FF}\u{FB50}-\u{FDFF}\u{FE70}-\u{FEFF}]+/gu,
+    ' ',
+  );
 
   // 5. Prefixo "Grand Opening!!" e similares - mantem apenas o que vem depois
   s = s.replace(/^\s*(?:GRAND\s+OPENING|GRAND\s+OPEN)\s*!*\s*/i, '');
@@ -222,16 +235,34 @@ async function fetchByLocale(locale) {
   const url = `${SL_API}/fetchServersByLocale/${locale}`;
   const { data } = await axios.get(url, { timeout: 60000 });
   if (!Array.isArray(data)) return [];
-  return data
-    .map((srv) => {
-      const d = srv.Data || {};
-      const v = d.vars || {};
-      return {
-        city: cleanCityName(v.sv_projectName || d.hostname || ''),
-        boosts: d.upvotePower || 0,
-      };
-    })
+
+  const mapped = data.map((srv) => {
+    const d = srv.Data || {};
+    const v = d.vars || {};
+    const raw = v.sv_projectName || d.hostname || '';
+    return {
+      raw,
+      city: cleanCityName(raw),
+      boosts: d.upvotePower || 0,
+    };
+  });
+
+  // Modo debug: se DEBUG_LOCALE bate com o locale atual, loga raw vs cleaned
+  // de TODOS os servidores retornados (nao so o top 20). Util pra diagnosticar
+  // sumiço de servidores especificos como "ele saiu do UK?".
+  if (process.env.DEBUG_LOCALE === locale) {
+    log(`[DEBUG ${locale}] API retornou ${mapped.length} servidores brutos:`);
+    mapped
+      .slice()
+      .sort((a, b) => b.boosts - a.boosts)
+      .forEach((s, i) => {
+        log(`  ${i + 1}. ${s.boosts}b | raw="${s.raw}" | clean="${s.city}"`);
+      });
+  }
+
+  return mapped
     .filter((s) => s.city)
+    .map(({ city, boosts }) => ({ city, boosts }))
     .sort((a, b) => {
       // Sort estavel: desempate alfabetico quando boosts sao iguais
       // (evita oscilacao de posicao entre cidades empatadas)
@@ -310,12 +341,40 @@ async function fetchByLocaleResilient(locale, label) {
   return result;
 }
 
+// Mergeia duas listas [{city,boosts}], dedupando por nome (case-insensitive).
+// Mantem o maior boost quando houver duplicata. Retorna top TOP_N ordenado.
+function mergeRankings(a, b) {
+  const map = new Map();
+  for (const s of [...a, ...b]) {
+    const key = s.city.toLowerCase();
+    const existing = map.get(key);
+    if (!existing || s.boosts > existing.boosts) {
+      map.set(key, s);
+    }
+  }
+  return [...map.values()]
+    .sort((x, y) => {
+      if (y.boosts !== x.boosts) return y.boosts - x.boosts;
+      return x.city.localeCompare(y.city);
+    })
+    .slice(0, TOP_N);
+}
+
 async function fetchAllRankings() {
   const cache = loadLastGood();
   const rankings = {};
 
   for (const c of COUNTRIES) {
-    const fresh = await fetchByLocaleResilient(c.locale, c.label);
+    let fresh = await fetchByLocaleResilient(c.locale, c.label);
+
+    // Busca locales extras e merge (ex: UK busca en-GB + en-UK)
+    for (const extra of c.extraLocales || []) {
+      const extraResult = await fetchByLocaleResilient(extra, `${c.label}/${extra}`);
+      if (extraResult.length > 0) {
+        fresh = mergeRankings(fresh, extraResult);
+        log(`    + ${c.label} mergeou ${extraResult.length} servers de ${extra}`);
+      }
+    }
 
     if (fresh.length >= MIN_SERVERS_THRESHOLD) {
       // Resposta saudavel - usa e atualiza cache
