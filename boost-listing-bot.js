@@ -85,6 +85,7 @@ const {
   POSICOES_CHANNEL_ID,
   BOOSTS_DELTAS_CHANNEL_ID,
   DAILY_LIST_CHANNEL_ID,
+  LOG_CHANNEL_ID,
   ZAPI_BASE_URL,
   ZAPI_CLIENT_TOKEN,
   ZAPI_NOTIFICATION_NUMBERS,
@@ -677,7 +678,7 @@ async function detectAndPostChanges(client, rankings, previous) {
   if (!previous) {
     saveRankingState(currentState);
     log('Snapshot inicial de rankings salvo (sem comparacao na 1a vez).');
-    return;
+    return { positionChanges: 0, rushAlerts: 0 };
   }
 
   const now = new Date().toLocaleString('pt-BR', {
@@ -688,6 +689,7 @@ async function detectAndPostChanges(client, rankings, previous) {
 
   // === 1. Alteracoes de posicao -> CHANGES_CHANNEL_ID + agrega p/ WhatsApp ===
   const allSantaChanges = []; // pra notificacao WhatsApp agregada
+  let positionChanges = 0;
 
   if (CHANGES_CHANNEL_ID) {
     const channel = await client.channels.fetch(CHANGES_CHANNEL_ID);
@@ -781,12 +783,14 @@ async function detectAndPostChanges(client, rankings, previous) {
       }
 
       if (totalChanges === 0) log('Nenhuma alteracao de posicao desde o ultimo snapshot.');
+      positionChanges = totalChanges;
     }
   }
 
   // === 2. Alertas de RUSH no podio -> RUSH_CHANNEL_ID ===
+  let rushAlerts = 0;
   if (RUSH_CHANNEL_ID) {
-    await detectRushers(client, rankings, previous, now);
+    rushAlerts = await detectRushers(client, rankings, previous, now);
   }
 
   // === 3. Notificacao WhatsApp Z-API (formato igual ao bot Python) ===
@@ -800,15 +804,17 @@ async function detectAndPostChanges(client, rankings, previous) {
   }
 
   saveRankingState(currentState);
+  return { positionChanges, rushAlerts };
 }
 
 async function detectRushers(client, rankings, previous, now) {
   const channel = await client.channels.fetch(RUSH_CHANNEL_ID);
   if (!channel) {
     log(`Canal de rush ${RUSH_CHANNEL_ID} nao encontrado.`);
-    return;
+    return 0;
   }
 
+  let rushAlertCount = 0;
   for (const c of COUNTRIES) {
     const santas = SANTA_BY_COUNTRY[c.label] || [];
     if (!santas.length) continue;
@@ -925,6 +931,7 @@ async function detectRushers(client, rankings, previous, now) {
 
     await channel.send({ embeds: [embed] });
     log(`  🚨 RUSH ${c.label}: ${rushers.length} rusher(s), ${losers.length} doador(es)`);
+    rushAlertCount++;
 
     // DM com o MESMO embed que foi pro canal (identico)
     try {
@@ -934,6 +941,7 @@ async function detectRushers(client, rankings, previous, now) {
       log(`  Erro ao enviar DMs de rush: ${err.message}`);
     }
   }
+  return rushAlertCount;
 }
 
 async function dmRoleMembers(client, roleId, payload) {
@@ -1064,10 +1072,25 @@ async function updateListing(client) {
   }
 
   // 4. Detector de alteracoes (ALTERAÇÕES + RUSH + WhatsApp)
+  let detectStats = { positionChanges: 0, rushAlerts: 0 };
   try {
-    await detectAndPostChanges(client, rankings, previous);
+    detectStats = (await detectAndPostChanges(client, rankings, previous)) || detectStats;
   } catch (err) {
     log(`Erro ao detectar alteracoes: ${err.message}`);
+  }
+
+  // 5. Log do tick: mesma listagem top 20, mas como msg nova a cada tick
+  if (LOG_CHANNEL_ID) {
+    try {
+      const channel = await client.channels.fetch(LOG_CHANNEL_ID);
+      if (channel) {
+        await channel.send({ embeds: [buildEmbed(rankings)] });
+      } else {
+        log(`Canal de log ${LOG_CHANNEL_ID} nao encontrado.`);
+      }
+    } catch (err) {
+      log(`Erro ao enviar log do tick: ${err.message}`);
+    }
   }
 }
 
