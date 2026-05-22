@@ -939,30 +939,49 @@ async function detectRushers(client, rankings, previous, now) {
 async function dmRoleMembers(client, roleId, payload) {
   let sent = 0;
   let failed = 0;
-  for (const guild of client.guilds.cache.values()) {
+  const guilds = [...client.guilds.cache.values()];
+  log(`  [DM] Bot esta em ${guilds.length} guild(s). Procurando cargo ${roleId}...`);
+
+  for (const guild of guilds) {
     let role;
     try {
       role = await guild.roles.fetch(roleId);
-    } catch {
+    } catch (err) {
+      log(`  [DM] Guild ${guild.name} (${guild.id}): erro ao buscar cargo: ${err.message}`);
       continue;
     }
-    if (!role) continue;
+    if (!role) {
+      log(`  [DM] Guild ${guild.name} (${guild.id}): cargo nao existe aqui.`);
+      continue;
+    }
 
+    log(`  [DM] Cargo encontrado em ${guild.name}. Buscando membros...`);
     try {
       await guild.members.fetch();
     } catch (err) {
-      log(`  Erro ao listar membros do guild ${guild.id}: ${err.message}`);
+      log(`  [DM] Erro ao listar membros do guild ${guild.id}: ${err.message}`);
+      log(`  [DM] (Verifique se "Server Members Intent" esta ativo no Developer Portal)`);
       continue;
     }
 
-    for (const member of role.members.values()) {
-      if (member.user.bot) continue;
+    const members = [...role.members.values()];
+    log(`  [DM] ${members.length} membro(s) com o cargo em ${guild.name}.`);
+    if (members.length === 0) {
+      log(`  [DM] Ninguem tem o cargo! Verifique se o ID ${roleId} esta correto.`);
+    }
+
+    for (const member of members) {
+      if (member.user.bot) {
+        log(`  [DM] Pulando bot: ${member.user.tag}`);
+        continue;
+      }
       try {
         await member.send(payload);
         sent++;
+        log(`  [DM] ✓ Enviado para ${member.user.tag}`);
       } catch (err) {
         failed++;
-        log(`    DM falhou p/ ${member.user.tag}: ${err.message}`);
+        log(`  [DM] ✗ Falhou p/ ${member.user.tag}: ${err.message}`);
       }
       await sleep(300); // evita rate-limit do Discord
     }
@@ -1066,6 +1085,7 @@ async function main() {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
   });
   const runOnce = process.argv.includes('--once');
+  const runDailyNow = process.argv.includes('--daily-now');
 
   client.once('ready', async () => {
     log(`Bot logado como ${client.user.tag}`);
@@ -1076,6 +1096,18 @@ async function main() {
     log(
       `Rush alerts: ativos quando santa eh top 1 com >= ${MIN_BOOSTS_FOR_RUSH_ALERT} boosts e rusher chega a <= ${(RUSH_DIFF_PERCENT * 100).toFixed(0)}% de gap. DM para cargo ${RUSH_DM_ROLE_ID}.`,
     );
+
+    // Modo de teste: dispara a daily list AGORA e encerra
+    if (runDailyNow) {
+      log('Modo --daily-now. Disparando postDailyList agora...');
+      try {
+        await postDailyList(client);
+      } catch (err) {
+        log(`Erro no daily-now: ${err.message}`);
+      }
+      client.destroy();
+      return;
+    }
 
     try {
       await updateListing(client);
