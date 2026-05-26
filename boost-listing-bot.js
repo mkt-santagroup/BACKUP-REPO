@@ -728,12 +728,6 @@ async function detectAndPostChanges(client, rankings, previous) {
           const oldBoosts = getBoosts(oldInfo);
           const boostDelta = newBoosts - oldBoosts;
 
-          // Ignora "movimento fantasma": posicao mudou mas a nossa cidade nao
-          // ganhou nem perdeu boost. Isso acontece quando outra cidade entra/sai
-          // de um empate alfabetico e empurra a nossa pra cima ou pra baixo, sem
-          // nenhuma acao real da nossa parte.
-          if (boostDelta === 0) continue;
-
           changes.push({
             city,
             oldPos,
