@@ -4,8 +4,7 @@ const path = require('path');
 const axios = require('axios');
 const cron = require('node-cron');
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
-
-const SL_API = 'https://fivem-sl-api.onrender.com';
+const cfxFetcher = require('./cfx-fetcher');
 const TOP_N = 20;
 const MAX_NAME_LEN = 22; // truncamento p/ caber dentro do limite do embed
 const EMBED_COLOR = 0x2b2d31; // cinza-escuro do tema do Discord
@@ -18,7 +17,6 @@ const MSG_ID_FILE = path.join(DATA_DIR, '.boost-message-id');
 const POSICOES_MSG_FILE = path.join(DATA_DIR, '.posicoes-message-id');
 const BOOSTS_DELTAS_MSG_FILE = path.join(DATA_DIR, '.boosts-deltas-message-id');
 const RANKING_STATE_FILE = path.join(DATA_DIR, '.boost-rankings-state.json');
-const LAST_GOOD_FILE = path.join(DATA_DIR, '.last-good-rankings.json');
 const MIN_SERVERS_THRESHOLD = 10; // abaixo disso, considera resposta incompleta e usa cache
 
 // Limites do detector de rush no podio
@@ -27,6 +25,8 @@ const RUSH_DIFF_PERCENT = 0.30;         // alerta quando rusher esta a <= 30% de
 const RUSH_DIFF_CLOSE_MIN = 50;         // o rusher precisa ter fechado o gap em >= isso (debounce)
 const LOSS_THRESHOLD = 100;             // perda minima para flagar uma cidade como "doadora"
 const RUSH_DM_ROLE_ID = '1476932779123150959'; // cargo que recebe DM desesperada quando ha rush
+const FETCH_ERROR_DM_ROLE_ID = '1494291006693310464'; // cargo que recebe DM quando o fetch falha
+const FETCH_ERROR_COOLDOWN_MS = 15 * 60 * 1000; // nao spamma o mesmo erro: 15min entre DMs
 
 // Palavras-chave de promo/marketing - cortamos a string ANTES delas (na primeira ocorrencia
 // que NAO seja o inicio do nome). O regex usa \b apenas na ABERTURA, entao "INAUGURA"
@@ -233,8 +233,11 @@ function truncate(s, max) {
 }
 
 async function fetchByLocale(locale) {
-  const url = `${SL_API}/fetchServersByLocale/${locale}`;
-  const { data } = await axios.get(url, { timeout: 60000 });
+  // Antes batia em fivem-sl-api.onrender.com (wrapper externo que parou de funcionar
+  // quando o FiveM moveu o endpoint de servers-frontend.fivem.net pra
+  // frontend.cfx-services.net). Agora puxa direto da API oficial nova via
+  // cfx-fetcher (FrameReader + protobuf inline). Cache em memoria de 45s.
+  const data = await cfxFetcher.fetchServersByLocale(locale);
   if (!Array.isArray(data)) return [];
 
   const mapped = data.map((srv) => {
@@ -309,19 +312,6 @@ function buildEmbed(rankingByCountry) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function loadLastGood() {
-  if (!fs.existsSync(LAST_GOOD_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(LAST_GOOD_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
-}
-
-function saveLastGood(cache) {
-  fs.writeFileSync(LAST_GOOD_FILE, JSON.stringify(cache, null, 2));
-}
-
 // Faz fetch, e se vier abaixo do threshold, tenta de novo apos um pequeno delay
 async function fetchByLocaleResilient(locale, label) {
   let result = [];
@@ -361,9 +351,13 @@ function mergeRankings(a, b) {
     .slice(0, TOP_N);
 }
 
+// Resultado do ultimo fetchAllRankings: lista de paises que falharam.
+// Lido pelo updateListing pra disparar DM ao cargo de fetch error.
+let lastFetchFailures = [];
+
 async function fetchAllRankings() {
-  const cache = loadLastGood();
   const rankings = {};
+  const failures = [];
 
   for (const c of COUNTRIES) {
     let fresh = await fetchByLocaleResilient(c.locale, c.label);
@@ -377,26 +371,73 @@ async function fetchAllRankings() {
       }
     }
 
+    rankings[c.label] = fresh;
+
     if (fresh.length >= MIN_SERVERS_THRESHOLD) {
-      // Resposta saudavel - usa e atualiza cache
-      rankings[c.label] = fresh;
-      cache[c.label] = fresh;
       log(`  ${c.flag} ${c.label} (${c.locale}): ${fresh.length} servers`);
-    } else if (cache[c.label] && cache[c.label].length >= MIN_SERVERS_THRESHOLD) {
-      // Resposta incompleta - usa o ultimo bom cache
-      rankings[c.label] = cache[c.label];
-      log(
-        `  ⚠️  ${c.flag} ${c.label} (${c.locale}): API retornou ${fresh.length}, usando cache (${cache[c.label].length})`,
-      );
     } else {
-      // Sem cache ainda - aceita o que veio
-      rankings[c.label] = fresh;
-      log(`  ${c.flag} ${c.label} (${c.locale}): ${fresh.length} servers (sem cache anterior)`);
+      log(`  ❌ ${c.flag} ${c.label} (${c.locale}): FALHOU (${fresh.length} servers retornados)`);
+      failures.push({ country: c, freshCount: fresh.length });
     }
   }
 
-  saveLastGood(cache);
+  lastFetchFailures = failures;
   return rankings;
+}
+
+// Throttle por categoria (kind+labels). Evita mandar a mesma DM toda hora
+// enquanto o problema persiste. Reseta quando o conjunto de falhas muda.
+let lastFetchErrorKey = '';
+let lastFetchErrorAt = 0;
+
+async function notifyFetchFailures(client, failures) {
+  if (!failures || failures.length === 0) return;
+  if (!FETCH_ERROR_DM_ROLE_ID) return;
+
+  const key = failures.map((f) => `${f.country.label}:${f.kind}`).sort().join('|');
+  const now = Date.now();
+  if (key === lastFetchErrorKey && now - lastFetchErrorAt < FETCH_ERROR_COOLDOWN_MS) {
+    return; // mesmo conjunto de erros recente, nao spamma
+  }
+  lastFetchErrorKey = key;
+  lastFetchErrorAt = now;
+
+  const nowStr = new Date().toLocaleString('pt-BR', {
+    timeZone: BACKUP_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const lines = failures.map(
+    (f) =>
+      `${f.country.flag} ${f.country.label} (${f.country.locale}) — retornou ${f.freshCount} servers`,
+  );
+
+  const allBroken = failures.length === COUNTRIES.length;
+  const title = allBroken
+    ? '🚨 BOT DE BOOSTS: API CAIU TOTALMENTE'
+    : '⚠️ BOT DE BOOSTS: falha parcial na API';
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setColor(ALERT_COLOR)
+    .setDescription(
+      `Falhou ao puxar **${failures.length}/${COUNTRIES.length}** paises as ${nowStr}.\n\n` +
+        '```\n' + lines.join('\n') + '\n```' +
+        '\n_Vou tentar de novo no proximo tick. So volto a avisar daqui a ' +
+        `${Math.round(FETCH_ERROR_COOLDOWN_MS / 60000)} min se persistir._`,
+    );
+
+  try {
+    const { sent, failed } = await dmRoleMembers(
+      client,
+      FETCH_ERROR_DM_ROLE_ID,
+      { embeds: [embed] },
+    );
+    log(`  📩 Alerta de fetch enviado: ${sent} DMs, ${failed} falhas`);
+  } catch (err) {
+    log(`  Erro ao enviar alerta de fetch: ${err.message}`);
+  }
 }
 
 // ===== Detector de alteracoes de ranking =====
@@ -1018,6 +1059,15 @@ async function updateListing(client) {
   log('Buscando rankings dos paises...');
   const rankings = await fetchAllRankings();
   const previous = loadRankingState(); // carrega 1x e reutiliza
+
+  // Se algum pais falhou, DM o cargo de alerta (com throttle pra nao spammar)
+  if (lastFetchFailures.length > 0) {
+    try {
+      await notifyFetchFailures(client, lastFetchFailures);
+    } catch (err) {
+      log(`Erro ao notificar fetch failures: ${err.message}`);
+    }
+  }
 
   // 1. Listagem principal (top 20 de cada pais)
   try {
