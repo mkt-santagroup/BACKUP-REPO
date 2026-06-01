@@ -5,6 +5,7 @@ const axios = require('axios');
 const cron = require('node-cron');
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const cfxFetcher = require('./cfx-fetcher');
+const { cleanCityName } = require('./clean-name');
 const TOP_N = 20;
 const MAX_NAME_LEN = 22; // truncamento p/ caber dentro do limite do embed
 const EMBED_COLOR = 0x2b2d31; // cinza-escuro do tema do Discord
@@ -28,55 +29,6 @@ const RUSH_DM_ROLE_ID = '1476932779123150959'; // cargo que recebe DM desesperad
 const FETCH_ERROR_DM_ROLE_ID = '1494291006693310464'; // cargo que recebe DM quando o fetch falha
 const FETCH_ERROR_COOLDOWN_MS = 15 * 60 * 1000; // nao spamma o mesmo erro: 15min entre DMs
 
-// Palavras-chave de promo/marketing - cortamos a string ANTES delas (na primeira ocorrencia
-// que NAO seja o inicio do nome). O regex usa \b apenas na ABERTURA, entao "INAUGURA"
-// tambem casa "INAUGURACAO", "INAUGURACION", "INAUGURADO" etc.
-const PROMO_KEYWORDS = [
-  'LAUNCH',
-  'OPENING', 'OPENS', 'OPENED', 'OPEN',
-  'WIPOU', 'WIPED', 'WIPES', 'WIPING', 'WIPE',
-  'INAUGURA', 'INAUGUROU', 'INAUGURO',
-  'APERTURA', 'ABRIU', 'ABERTURA',
-  'COMEBACK',
-  'UPDATE', 'UPDATED', 'UPDATES',
-  'BEGINNER',
-  'NOW', 'TODAY', 'HOJE', 'HOY',
-  'SEASON', 'SAISON',
-  'DISCORD', 'discord', 'DC\\b',
-  'SERVEUR', 'SERVIDOR', 'SERVER',
-  'SOBREVIVENCIA', 'APOCALIPSE',
-  'SERIOUS', 'SÉRIEUX', 'SERIO', 'sérieux', 'serio',
-  'FRESH', 'ECONOMY',
-  'GANG\\b',
-  'MAKING',
-  'SUMMER', 'SPRING', 'AUTUMN', 'WINTER', 'VERAO', 'INVIERNO',
-  'BIG', 'FUN',
-  'VIBE', 'VIBES',
-  'ULTIMATE',
-  'EXCLUSIF', 'EXCLUSIVE',
-  'NEW',
-  'TRAMES', 'UNBAN',
-  'ESSAYER', 'TENTER',
-  'PROXIMAMENTE', 'PROXIMA', 'PROXIMO',
-  'OUT\\b', 'SOON', 'SOON\\b',
-  'ENTRA', 'ENTRE', 'ENTREZ', 'ENTRADAS',
-  'REBORN', 'RELANC',
-  'AIMLAB',
-  'PACK',
-  'ESTAMOS',
-  'EVENTS', 'EVENTO', 'EVENEMENT',
-  'ANOS', 'YEARS', 'ANNIVERSARY', 'ANIVERSARIO',
-  'PRIVADO', 'PRIVATE',
-  'CUSTOM',
-  'WL\\b',
-  'GROS',
-  'AUTOMAT',
-  'ADVANCED',
-  'LO\\s+QUE', 'LO\\b',
-  'SI\\s+EN',
-  'GROUP\\b',
-];
-
 const {
   DISCORD_BOT_TOKEN,
   BOOSTS_CHANNEL_ID,
@@ -99,17 +51,18 @@ const ZAPI_NUMBERS = (ZAPI_NOTIFICATION_NUMBERS || '')
   .map((n) => n.trim())
   .filter(Boolean);
 
-// extraLocales: locales adicionais a buscar e mergear. Util quando server tagga
-// `vars.locale` com codigo nao-padrao (ex: Trappin UK usa "en-UK" em vez do
-// ISO "en-GB"). Resultados dedupados por nome de cidade, maior boost vence.
+// extraLocales: variantes adicionais do locale a buscar e mergear. Servers cadastram
+// o mesmo locale de formas diferentes (ex: Trappin UK usa "en-UK" em vez do ISO
+// "en-GB"). Sem mesclar, perde-se ~22% de cobertura no UK e variavel nos outros.
+// Conjunto baseado no que o dashboard ja prova funcionar.
 const COUNTRIES = [
-  { flag: '🇧🇷', label: 'BR', code: 'BR', locale: 'pt-BR' },
-  { flag: '🇬🇧', label: 'UK', code: 'GB', locale: 'en-GB', extraLocales: ['en-UK'] },
-  { flag: '🇵🇹', label: 'PT', code: 'PT', locale: 'pt-PT' },
-  { flag: '🇪🇸', label: 'ES', code: 'ES', locale: 'es-ES' },
-  { flag: '🇺🇸', label: 'US', code: 'US', locale: 'en-US' },
-  { flag: '🇫🇷', label: 'FR', code: 'FR', locale: 'fr-FR' },
-  { flag: '🇸🇦', label: 'SA', code: 'SA', locale: 'ar-SA' },
+  { flag: '🇧🇷', label: 'BR', code: 'BR', locale: 'pt-BR', extraLocales: ['pt-br'] },
+  { flag: '🇬🇧', label: 'UK', code: 'GB', locale: 'en-GB', extraLocales: ['en-UK', 'en-uk'] },
+  { flag: '🇵🇹', label: 'PT', code: 'PT', locale: 'pt-PT', extraLocales: ['pt-pt'] },
+  { flag: '🇪🇸', label: 'ES', code: 'ES', locale: 'es-ES', extraLocales: ['es-es'] },
+  { flag: '🇺🇸', label: 'US', code: 'US', locale: 'en-US', extraLocales: ['en_US', 'en-us'] },
+  { flag: '🇫🇷', label: 'FR', code: 'FR', locale: 'fr-FR', extraLocales: ['fr-fr'] },
+  { flag: '🇸🇦', label: 'SA', code: 'SA', locale: 'ar-SA', extraLocales: ['ar-sa'] },
 ];
 
 // Cidades do SantaGroup por pais (match parcial, case-insensitive).
@@ -128,97 +81,6 @@ const SANTA_BY_COUNTRY = {
 function log(msg) {
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${now}] ${msg}`);
-}
-
-function cleanCityName(raw = '') {
-  let s = raw;
-
-  // 1. Codigos de cor do FiveM (^1, ^2...)
-  s = s.replace(/\^[0-9]/g, '');
-
-  // 2. Conteudo entre colchetes/parenteses: [BR], [18+], [FRESH ECONOMY, (anything)
-  s = s.replace(/\[[^\]]*\]?/g, ' ');
-  s = s.replace(/\([^)]*\)?/g, ' ');
-
-  // 3. Emojis e pictogramas
-  s = s.replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu, ' ');
-
-  // 4. Caracteres decorativos (setas, blocos, traços longos, etc.)
-  s = s.replace(
-    /[▬═║╗╔↭🡺🡸»«—–⟶⟵◥◤◣◢⌠⌡░▒▓▌▐╣╠╬¦│┃·•★☆◆◇■□●○⤳⤠⮕⮜<>«»―‐‑‒]/g,
-    ' ',
-  );
-  s = s.replace(
-    /[\u{2010}-\u{206F}\u{2580}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F800}-\u{1F8FF}\u{2900}-\u{297F}]/gu,
-    ' ',
-  );
-  // Zero-width joiners, variation selectors, replacement char
-  s = s.replace(/[\u{200B}-\u{200F}\u{FE00}-\u{FE0F}\u{FFFD}]/gu, '');
-
-  // 4.5. Strip texto Arabe (servers da SA misturam nome latim com promo em arabe
-  // tipo "Orizon RP🡺تنطلق الآن 19 دقائق🡸" = "lanca em 19 min"). Strip tambem
-  // dos blocos de presentation forms / arabic supplement.
-  s = s.replace(
-    /[\u{0600}-\u{06FF}\u{0750}-\u{077F}\u{08A0}-\u{08FF}\u{FB50}-\u{FDFF}\u{FE70}-\u{FEFF}]+/gu,
-    ' ',
-  );
-
-  // 5. Prefixo "Grand Opening!!" e similares - mantem apenas o que vem depois
-  s = s.replace(/^\s*(?:GRAND\s+OPENING|GRAND\s+OPEN)\s*!*\s*/i, '');
-
-  // 6. Adiciona espaco em camelCase agressivo: "RoleplayLAUNCHED" -> "Roleplay LAUNCHED"
-  s = s.replace(/([a-z])([A-Z]{2,})/g, '$1 $2');
-
-  // 7. Corta em separadores comuns " - ", " | ", " #"
-  s = s.split(/\s+[-]\s+/)[0];
-  s = s.split('|')[0];
-  s = s.split(/\s+#/)[0];
-
-  // 8. Colapsa "RP RP" -> "RP"
-  s = s.replace(/\bRP\s+RP\b/gi, 'RP');
-
-  // 9. Corta no primeiro keyword de promo (apenas se estiver depois da primeira palavra).
-  // \b apenas na abertura: "INAUGURA" tambem casa "INAUGURACAO"/"INAUGURACION".
-  // Keywords ja podem trazer \\b proprio no fim quando precisam ser exatos.
-  const promoRe = new RegExp(
-    '\\s(?:' +
-      PROMO_KEYWORDS.map((p) =>
-        // mantem \\b literal se ja vier no keyword, senao escapa o resto normalmente
-        p.includes('\\b') || p.includes('\\s')
-          ? p
-          : p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-      ).join('|') +
-      ')',
-    'i',
-  );
-  const m = s.match(promoRe);
-  if (m && m.index > 0) s = s.slice(0, m.index);
-
-  // 10. Strip de sufixos de data: "14-MAY", "14-05", "MAY 2ND"
-  s = s.replace(/\s*\d{1,2}[-/]\w+/g, '');
-  s = s.replace(/\s*\d{1,2}(?:ST|ND|RD|TH)\b/gi, '');
-
-  // 11. Strip de marcadores de idade: "18+", "21+"
-  s = s.replace(/\s*\b\d{1,2}\+/g, '');
-
-  // 12. Corta em "!!"
-  s = s.split('!!')[0];
-
-  // 13. Strip pontuacao orfa
-  s = s.replace(/[!*]+/g, '');
-  s = s.replace(/^[\s\-:.,;]+/, '').replace(/[\s\-:.,;]+$/, '');
-
-  // 14. Strip digito solto no final (1 digito apenas) - evita "META CITY 5" virar nome
-  //     Nao afeta "LIBERTY 99" ou "Viper 3.5" (multi-digito ou com ponto).
-  s = s.replace(/\s+\d\s*$/, '');
-
-  // 15. Strip chars-lixo no final (qualquer coisa que nao seja letra/digito)
-  s = s.replace(/(?:\s+[^\p{L}\p{N}]+)+$/u, '');
-
-  // 16. Colapsa espacos
-  s = s.replace(/\s+/g, ' ').trim();
-
-  return s || raw;
 }
 
 function isOurCity(name, countryLabel) {
