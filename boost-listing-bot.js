@@ -51,18 +51,16 @@ const ZAPI_NUMBERS = (ZAPI_NOTIFICATION_NUMBERS || '')
   .map((n) => n.trim())
   .filter(Boolean);
 
-// extraLocales: variantes adicionais do locale a buscar e mergear. Servers cadastram
-// o mesmo locale de formas diferentes (ex: Trappin UK usa "en-UK" em vez do ISO
-// "en-GB"). Sem mesclar, perde-se ~22% de cobertura no UK e variavel nos outros.
-// Conjunto baseado no que o dashboard ja prova funcionar.
+// cfx-fetcher ja normaliza case/separator (es_ES == es-es == ES-ES).
+// extraLocales agora so pra ALIAS REAL (ex: en-UK <-> en-GB sao codigos diferentes).
 const COUNTRIES = [
-  { flag: '🇧🇷', label: 'BR', code: 'BR', locale: 'pt-BR', extraLocales: ['pt-br'] },
-  { flag: '🇬🇧', label: 'UK', code: 'GB', locale: 'en-GB', extraLocales: ['en-UK', 'en-uk'] },
-  { flag: '🇵🇹', label: 'PT', code: 'PT', locale: 'pt-PT', extraLocales: ['pt-pt'] },
-  { flag: '🇪🇸', label: 'ES', code: 'ES', locale: 'es-ES', extraLocales: ['es-es'] },
-  { flag: '🇺🇸', label: 'US', code: 'US', locale: 'en-US', extraLocales: ['en_US', 'en-us'] },
-  { flag: '🇫🇷', label: 'FR', code: 'FR', locale: 'fr-FR', extraLocales: ['fr-fr'] },
-  { flag: '🇸🇦', label: 'SA', code: 'SA', locale: 'ar-SA', extraLocales: ['ar-sa'] },
+  { flag: '🇧🇷', label: 'BR', code: 'BR', locale: 'pt-BR' },
+  { flag: '🇬🇧', label: 'UK', code: 'GB', locale: 'en-GB', extraLocales: ['en-UK'] },
+  { flag: '🇵🇹', label: 'PT', code: 'PT', locale: 'pt-PT' },
+  { flag: '🇪🇸', label: 'ES', code: 'ES', locale: 'es-ES' },
+  { flag: '🇺🇸', label: 'US', code: 'US', locale: 'en-US' },
+  { flag: '🇫🇷', label: 'FR', code: 'FR', locale: 'fr-FR' },
+  { flag: '🇸🇦', label: 'SA', code: 'SA', locale: 'ar-SA' },
 ];
 
 // Cidades do SantaGroup por pais (match parcial, case-insensitive).

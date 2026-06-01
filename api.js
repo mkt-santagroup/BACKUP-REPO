@@ -58,14 +58,16 @@ function requireApiKey(req, res, next) {
   next();
 }
 
+// cfx-fetcher ja normaliza case/separator (es_ES == es-es == ES-ES).
+// extraLocales agora so pra ALIAS REAL (ex: en-UK <-> en-GB sao codigos diferentes).
 const COUNTRIES = [
-  { flag: '🇧🇷', label: 'BR', locale: 'pt-BR', extraLocales: ['pt-br'] },
-  { flag: '🇬🇧', label: 'UK', locale: 'en-GB', extraLocales: ['en-UK', 'en-uk'] },
-  { flag: '🇵🇹', label: 'PT', locale: 'pt-PT', extraLocales: ['pt-pt'] },
-  { flag: '🇪🇸', label: 'ES', locale: 'es-ES', extraLocales: ['es-es'] },
-  { flag: '🇺🇸', label: 'US', locale: 'en-US', extraLocales: ['en_US', 'en-us'] },
-  { flag: '🇫🇷', label: 'FR', locale: 'fr-FR', extraLocales: ['fr-fr'] },
-  { flag: '🇸🇦', label: 'SA', locale: 'ar-SA', extraLocales: ['ar-sa'] },
+  { flag: '🇧🇷', label: 'BR', locale: 'pt-BR' },
+  { flag: '🇬🇧', label: 'UK', locale: 'en-GB', extraLocales: ['en-UK'] },
+  { flag: '🇵🇹', label: 'PT', locale: 'pt-PT' },
+  { flag: '🇪🇸', label: 'ES', locale: 'es-ES' },
+  { flag: '🇺🇸', label: 'US', locale: 'en-US' },
+  { flag: '🇫🇷', label: 'FR', locale: 'fr-FR' },
+  { flag: '🇸🇦', label: 'SA', locale: 'ar-SA' },
 ];
 
 const COUNTRY_BY_LABEL = new Map(COUNTRIES.map((c) => [c.label.toUpperCase(), c]));

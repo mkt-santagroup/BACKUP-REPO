@@ -87,12 +87,18 @@ async function getAllServers() {
   return inflight;
 }
 
-// Filtra por locale (case-insensitive). Mantem o shape compativel com o
-// retorno antigo do fivem-sl-api: array de { Data: { vars, upvotePower, ... } }.
+// Normaliza locale: lowercase + troca "_" por "-". Servers cadastram inconsistente
+// (es_ES, es-ES, es-es, ES_es, etc) - tudo isso colapsa pro mesmo "es-es".
+function normLocale(s) {
+  return String(s || '').toLowerCase().replace(/_/g, '-');
+}
+
+// Filtra por locale (insensitive a case e a separador). Mantem o shape compativel
+// com o retorno antigo do fivem-sl-api: array de { Data: { vars, upvotePower, ... } }.
 async function fetchServersByLocale(locale) {
   const all = await getAllServers();
-  const target = String(locale || '').toLowerCase();
-  return all.filter((s) => (s?.Data?.vars?.locale || '').toLowerCase() === target);
+  const target = normLocale(locale);
+  return all.filter((s) => normLocale(s?.Data?.vars?.locale) === target);
 }
 
 module.exports = { fetchServersByLocale, getAllServers };
