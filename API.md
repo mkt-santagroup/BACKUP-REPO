@@ -37,6 +37,7 @@ Retorna o top de servidores de um país.
 |---|---|---|---|
 | `country` | string (path) | **obrigatório** | Código do país: `BR`, `UK`, `PT`, `ES`, `US`, `FR`, `SA` |
 | `limit` | int (query) | `20` | Quantidade de servers (mín 1, máx 200) |
+| `game` | string (query) | `gta5` | Filtro de jogo: `gta5` (FiveM, default), `rdr3` (RedM), `all` (tudo) |
 
 **Exemplo:**
 

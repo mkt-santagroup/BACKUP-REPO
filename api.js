@@ -71,8 +71,9 @@ const COUNTRIES = [
 const COUNTRY_BY_LABEL = new Map(COUNTRIES.map((c) => [c.label.toUpperCase(), c]));
 
 // Pega top servers do pais. Mescla todas as variantes de locale, deduplica por
-// EndPoint (= "joinId" curto do FiveM), descarta boosts <= 0, ordena por boost.
-async function getTopByCountry(country, limit) {
+// EndPoint (= "joinId" curto do FiveM), descarta boosts <= 0, filtra por jogo
+// (FiveM/GTA5 por padrao), ordena por boost.
+async function getTopByCountry(country, limit, gameFilter) {
   const allLocales = [country.locale, ...(country.extraLocales || [])];
   const buckets = await Promise.all(
     allLocales.map((loc) => cfxFetcher.fetchServersByLocale(loc)),
@@ -85,12 +86,29 @@ async function getTopByCountry(country, limit) {
       if (!ep) continue;
       const boosts = s?.Data?.upvotePower || 0;
       if (boosts <= 0) continue; // filtra servers sem boost
+      const game = (s?.Data?.vars?.gamename || '').toLowerCase();
+      if (gameFilter !== 'all' && game !== gameFilter) continue; // filtra por jogo
       if (!byEndpoint.has(ep)) byEndpoint.set(ep, s);
     }
   }
 
   return [...byEndpoint.values()]
-    .sort((a, b) => (b.Data?.upvotePower || 0) - (a.Data?.upvotePower || 0))
+    .sort((a, b) => {
+      // 1. boosts DESC (criterio primario)
+      const ba = b.Data?.upvotePower || 0;
+      const aa = a.Data?.upvotePower || 0;
+      if (ba !== aa) return ba - aa;
+
+      // 2. jogadores online DESC (empate -> server mais ativo ganha)
+      const bp = b.Data?.clients || 0;
+      const ap = a.Data?.clients || 0;
+      if (bp !== ap) return bp - ap;
+
+      // 3. ordem alfabetica do nome (garante estabilidade entre requisicoes)
+      const an = a.Data?.vars?.sv_projectName || a.Data?.hostname || '';
+      const bn = b.Data?.vars?.sv_projectName || b.Data?.hostname || '';
+      return an.localeCompare(bn);
+    })
     .slice(0, limit)
     .map((s, i) => ({
       rank: i + 1,
@@ -134,10 +152,14 @@ app.get('/:country', requireApiKey, async (req, res) => {
   if (limit < 1) limit = 1;
   if (limit > MAX_LIMIT) limit = MAX_LIMIT;
 
+  // ?game= : gta5 (FiveM, default = bate com servers.fivem.net), rdr3 (RedM), all
+  const gameFilter = String(req.query.game || 'gta5').toLowerCase();
+
   try {
-    const servers = await getTopByCountry(country, limit);
+    const servers = await getTopByCountry(country, limit, gameFilter);
     res.json({
       country: country.label,
+      game: gameFilter,
       count: servers.length,
       updatedAt: new Date().toISOString(),
       servers,
@@ -164,7 +186,10 @@ app.get('/', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`[api] Listening on http://localhost:${PORT}`);
+// Em ambientes tipo Railway, escutar em 0.0.0.0 (nao 127.0.0.1) eh
+// obrigatorio pro proxy externo conseguir alcancar o app.
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[api] Listening on 0.0.0.0:${PORT}`);
+  console.log(`[api] (process.env.PORT=${process.env.PORT || '<nao setado>'})`);
   console.log(`[api] Try: curl http://localhost:${PORT}/BR`);
 });
