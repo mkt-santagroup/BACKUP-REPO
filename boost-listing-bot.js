@@ -81,11 +81,19 @@ function log(msg) {
   console.log(`[${now}] ${msg}`);
 }
 
+// Match com word boundary pra evitar falso positivo (ex: "Horizon RP" contem
+// a substring "orizon" mas NAO eh a nossa cidade "Orizon").
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 function isOurCity(name, countryLabel) {
   const list = SANTA_BY_COUNTRY[countryLabel] || [];
   if (!list.length) return false;
   const lower = name.toLowerCase();
-  return list.some((c) => lower.includes(c.toLowerCase()));
+  return list.some((c) => {
+    const re = new RegExp(`\\b${escapeRegex(c.toLowerCase())}\\b`);
+    return re.test(lower);
+  });
 }
 
 function truncate(s, max) {
