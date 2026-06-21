@@ -83,13 +83,15 @@ const SANTA_BY_COUNTRY = {
 const ERROR_LOG_CHANNEL_ID =
   process.env.ERROR_LOG_CHANNEL_ID || '1518064632567304295';
 
+// "🚨" intencionalmente fora daqui - eh usado em alertas normais de RUSH (que
+// nao sao erros, sao notificacoes informativas).
 const ERROR_PATTERNS = [
   /\bErro\b/i,
   /\bERRO\b/,
   /\bFALHOU\b/i,
   /\bfalhou\b/,
   /\bfailed\b/i,
-  /❌|🚨|⚠️/,
+  /❌/,
   /UNHANDLED|UNCAUGHT/,
 ];
 function looksLikeError(msg) {
