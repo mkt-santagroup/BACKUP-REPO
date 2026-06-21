@@ -76,10 +76,64 @@ const SANTA_BY_COUNTRY = {
   SA: ['ORIZON'],
 };
 
+// ===== Logger: stdout sempre, + Discord se for erro =====
+// Canal de logs de erro. Quando setado, qualquer log que tenha "Erro/erro/FALHOU/
+// failed/❌/🚨/⚠️" eh agregado num buffer e enviado em batches pro Discord (a cada
+// 3s ou no fim do processo). Debounce evita rate limit do Discord.
+const ERROR_LOG_CHANNEL_ID =
+  process.env.ERROR_LOG_CHANNEL_ID || '1518064632567304295';
+
+const ERROR_PATTERNS = [
+  /\bErro\b/i,
+  /\bERRO\b/,
+  /\bFALHOU\b/i,
+  /\bfalhou\b/,
+  /\bfailed\b/i,
+  /❌|🚨|⚠️/,
+  /UNHANDLED|UNCAUGHT/,
+];
+function looksLikeError(msg) {
+  return ERROR_PATTERNS.some((re) => re.test(msg));
+}
+
+let _discordClient = null;
+const _errorBuffer = [];
+let _flushTimer = null;
+
+function setDiscordLogClient(client) {
+  _discordClient = client;
+}
+
+function flushErrorBuffer() {
+  _flushTimer = null;
+  if (_errorBuffer.length === 0 || !_discordClient || !ERROR_LOG_CHANNEL_ID) return;
+  const batch = _errorBuffer.splice(0, _errorBuffer.length);
+  // 1900 chars pra caber dentro do limite de msg do Discord (2000) + envelope
+  const body = batch.join('\n').slice(0, 1900);
+  const content = '🔴 **Erros recentes:**\n```\n' + body + '\n```';
+  _discordClient.channels
+    .fetch(ERROR_LOG_CHANNEL_ID)
+    .then((ch) => ch && ch.send({ content }))
+    .catch((e) => console.error(`[error-log] falha ao enviar: ${e.message}`));
+}
+
 function log(msg) {
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  console.log(`[${now}] ${msg}`);
+  const line = `[${now}] ${msg}`;
+  console.log(line);
+  if (_discordClient && looksLikeError(msg)) {
+    _errorBuffer.push(line);
+    if (!_flushTimer) _flushTimer = setTimeout(flushErrorBuffer, 3000);
+  }
 }
+
+// Captura rejeicoes/excecoes nao tratadas globalmente -> vai pro Discord tambem
+process.on('unhandledRejection', (err) => {
+  log(`UNHANDLED REJECTION: ${(err && err.stack) || err}`);
+});
+process.on('uncaughtException', (err) => {
+  log(`UNCAUGHT EXCEPTION: ${(err && err.stack) || err}`);
+});
 
 // Match com word boundary pra evitar falso positivo (ex: "Horizon RP" contem
 // a substring "orizon" mas NAO eh a nossa cidade "Orizon").
@@ -108,33 +162,16 @@ async function fetchByLocale(locale) {
   const data = await cfxFetcher.fetchServersByLocale(locale);
   if (!Array.isArray(data)) return [];
 
-  const mapped = data.map((srv) => {
-    const d = srv.Data || {};
-    const v = d.vars || {};
-    const raw = v.sv_projectName || d.hostname || '';
-    return {
-      raw,
-      city: cleanCityName(raw),
-      boosts: d.upvotePower || 0,
-    };
-  });
-
-  // Modo debug: se DEBUG_LOCALE bate com o locale atual, loga raw vs cleaned
-  // de TODOS os servidores retornados (nao so o top 20). Util pra diagnosticar
-  // sumiço de servidores especificos como "ele saiu do UK?".
-  if (process.env.DEBUG_LOCALE === locale) {
-    log(`[DEBUG ${locale}] API retornou ${mapped.length} servidores brutos:`);
-    mapped
-      .slice()
-      .sort((a, b) => b.boosts - a.boosts)
-      .forEach((s, i) => {
-        log(`  ${i + 1}. ${s.boosts}b | raw="${s.raw}" | clean="${s.city}"`);
-      });
-  }
-
-  return mapped
+  return data
+    .map((srv) => {
+      const d = srv.Data || {};
+      const v = d.vars || {};
+      return {
+        city: cleanCityName(v.sv_projectName || d.hostname || ''),
+        boosts: d.upvotePower || 0,
+      };
+    })
     .filter((s) => s.city)
-    .map(({ city, boosts }) => ({ city, boosts }))
     .sort((a, b) => {
       // Sort estavel: desempate alfabetico quando boosts sao iguais
       // (evita oscilacao de posicao entre cidades empatadas)
@@ -1023,7 +1060,9 @@ async function main() {
   const runDailyNow = process.argv.includes('--daily-now');
 
   client.once('ready', async () => {
+    setDiscordLogClient(client); // ativa o forward de erros pro canal de log
     log(`Bot logado como ${client.user.tag}`);
+    log(`Erros sao reportados em DM/canal #${ERROR_LOG_CHANNEL_ID}`);
     log('SantaGroup cities por pais:');
     for (const [country, list] of Object.entries(SANTA_BY_COUNTRY)) {
       log(`  ${country}: ${list.length ? list.join(', ') : '(nenhuma)'}`);
