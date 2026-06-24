@@ -71,7 +71,7 @@ const SANTA_BY_COUNTRY = {
   UK: ['KNG ESTATE', 'BOOMERANG', 'ROYAL'],
   PT: ['MALTA RP'],
   ES: ['REAL RP', 'PRIME RP'],
-  US: ['LIBERTY 99', 'DISTRICT 99'],
+  US: ['LIBERTY 99', 'DISTRICT 99', 'KROWN'],
   FR: ['GOAT'],
   SA: ['ORIZON'],
 };
@@ -722,6 +722,18 @@ async function detectAndPostChanges(client, rankings, previous) {
         await channel.send({ embeds: [embed] });
         log(`  Alteracoes ${c.label}: ${changes.length} (postadas)`);
         totalChanges += changes.length;
+
+        // DM identico do embed pro cargo de boost
+        try {
+          const { sent, failed } = await dmRoleMembers(
+            client,
+            RUSH_DM_ROLE_ID,
+            { embeds: [embed] },
+          );
+          log(`  📩 DM alteracao ${c.label}: ${sent} enviadas, ${failed} falhas`);
+        } catch (err) {
+          log(`  Erro DM alteracao ${c.label}: ${err.message}`);
+        }
       }
 
       if (totalChanges === 0) log('Nenhuma alteracao de posicao desde o ultimo snapshot.');
@@ -729,7 +741,17 @@ async function detectAndPostChanges(client, rankings, previous) {
     }
   }
 
-  // === 2. Alertas de RUSH no podio -> RUSH_CHANNEL_ID ===
+  // === 2. Detector de "alguem ultrapassou nossa santa" -> CHANGES + DM ===
+  // Mais critico que rush porque ja aconteceu - nao eh ameaca, eh perda.
+  if (CHANGES_CHANNEL_ID) {
+    try {
+      await detectAndPostPasses(client, previous, currentState, now);
+    } catch (err) {
+      log(`Erro ao detectar ultrapassagens: ${err.message}`);
+    }
+  }
+
+  // === 3. Alertas de RUSH no podio -> RUSH_CHANNEL_ID ===
   let rushAlerts = 0;
   if (RUSH_CHANNEL_ID) {
     rushAlerts = await detectRushers(client, rankings, previous, now);
@@ -747,6 +769,95 @@ async function detectAndPostChanges(client, rankings, previous) {
 
   saveRankingState(currentState);
   return { positionChanges, rushAlerts };
+}
+
+// Detecta cidades nao-santa que ultrapassaram alguma das nossas santa desde o
+// snapshot anterior. Por cada par (santa, passer), gera 1 embed alerta e envia
+// pro CHANGES_CHANNEL_ID + DM identica pro RUSH_DM_ROLE_ID.
+async function detectAndPostPasses(client, previous, currentState, now) {
+  if (!previous) return;
+  const channel = await client.channels.fetch(CHANGES_CHANNEL_ID);
+  if (!channel) return;
+
+  for (const c of COUNTRIES) {
+    if (!(SANTA_BY_COUNTRY[c.label] || []).length) continue;
+    const oldMap = previous[c.label] || {};
+    const newMap = currentState[c.label] || {};
+
+    // Para cada santa no ranking novo
+    for (const [santaName, santaNewInfo] of Object.entries(newMap)) {
+      if (!isOurCity(santaName, c.label)) continue;
+      const santaNewPos = getPos(santaNewInfo);
+      const santaOldInfo = oldMap[santaName];
+      if (!santaOldInfo) continue; // sem snapshot anterior pra comparar
+      const santaOldPos = getPos(santaOldInfo);
+
+      // Procura cidades nao-santa que estao ACIMA da santa agora
+      for (const [otherName, otherNewInfo] of Object.entries(newMap)) {
+        if (otherName === santaName) continue;
+        if (isOurCity(otherName, c.label)) continue;
+        const otherNewPos = getPos(otherNewInfo);
+        if (otherNewPos >= santaNewPos) continue; // nao esta acima
+
+        // Era abaixo (ou ausente do top 20) no snapshot anterior?
+        const otherOldInfo = oldMap[otherName];
+        const otherOldPos = otherOldInfo ? getPos(otherOldInfo) : null;
+        const wasBelow =
+          otherOldPos === null /* fora do top 20 */ ||
+          otherOldPos > santaOldPos /* estava abaixo */;
+        if (!wasBelow) continue; // nao houve ultrapassagem real
+
+        // CONFIRMADO: nao-santa ultrapassou a santa
+        const santaBoosts = getBoosts(santaNewInfo);
+        const passerBoosts = getBoosts(otherNewInfo);
+        const fromTxt =
+          otherOldPos === null ? 'fora do top 20' : `top ${otherOldPos}`;
+
+        const embed = new EmbedBuilder()
+          .setTitle('🔥 NOS ULTRAPASSARAM 🔥')
+          .setColor(ALERT_COLOR)
+          .setDescription(
+            `${c.flag} **${c.label}** — perdemos posicao pra uma cidade nao-santa!`,
+          )
+          .addFields(
+            {
+              name: '🟡 Nossa cidade',
+              value:
+                '```\n' +
+                `${c.code} ${truncate(santaName, MAX_NAME_LEN)}: ${santaBoosts} boosts` +
+                ` (top ${santaOldPos} → top ${santaNewPos})` +
+                '\n```',
+              inline: false,
+            },
+            {
+              name: '⚠️ Quem nos passou',
+              value:
+                '```\n' +
+                `${c.code} ${truncate(otherName, MAX_NAME_LEN)}: ${passerBoosts} boosts` +
+                ` (${fromTxt} → top ${otherNewPos})` +
+                '\n```',
+              inline: false,
+            },
+          )
+          .setFooter({ text: `Alerta gerado as ${now}` });
+
+        await channel.send({ embeds: [embed] });
+        log(`  🔥 PASSE ${c.label}: ${otherName} passou ${santaName}`);
+
+        // DM identica pro cargo de boost
+        try {
+          const { sent, failed } = await dmRoleMembers(
+            client,
+            RUSH_DM_ROLE_ID,
+            { embeds: [embed] },
+          );
+          log(`  📩 DM passe ${c.label}: ${sent} enviadas, ${failed} falhas`);
+        } catch (err) {
+          log(`  Erro DM passe ${c.label}: ${err.message}`);
+        }
+      }
+    }
+  }
 }
 
 async function detectRushers(client, rankings, previous, now) {
