@@ -784,7 +784,10 @@ async function detectAndPostPasses(client, previous, currentState, now) {
     const oldMap = previous[c.label] || {};
     const newMap = currentState[c.label] || {};
 
-    // Para cada santa no ranking novo
+    // Agrupa por PASSER: passerName -> { passerNewPos, passerOldPos, passerBoosts,
+    //                                    santasPassadas: [{name, oldPos, newPos, boosts}, ...] }
+    const passesByPasser = new Map();
+
     for (const [santaName, santaNewInfo] of Object.entries(newMap)) {
       if (!isOurCity(santaName, c.label)) continue;
       const santaNewPos = getPos(santaNewInfo);
@@ -792,69 +795,98 @@ async function detectAndPostPasses(client, previous, currentState, now) {
       if (!santaOldInfo) continue; // sem snapshot anterior pra comparar
       const santaOldPos = getPos(santaOldInfo);
 
-      // Procura cidades nao-santa que estao ACIMA da santa agora
       for (const [otherName, otherNewInfo] of Object.entries(newMap)) {
         if (otherName === santaName) continue;
         if (isOurCity(otherName, c.label)) continue;
         const otherNewPos = getPos(otherNewInfo);
         if (otherNewPos >= santaNewPos) continue; // nao esta acima
 
-        // Era abaixo (ou ausente do top 20) no snapshot anterior?
         const otherOldInfo = oldMap[otherName];
         const otherOldPos = otherOldInfo ? getPos(otherOldInfo) : null;
         const wasBelow =
           otherOldPos === null /* fora do top 20 */ ||
           otherOldPos > santaOldPos /* estava abaixo */;
-        if (!wasBelow) continue; // nao houve ultrapassagem real
+        if (!wasBelow) continue;
 
-        // CONFIRMADO: nao-santa ultrapassou a santa
-        const santaBoosts = getBoosts(santaNewInfo);
-        const passerBoosts = getBoosts(otherNewInfo);
-        const fromTxt =
-          otherOldPos === null ? 'fora do top 20' : `top ${otherOldPos}`;
-
-        const embed = new EmbedBuilder()
-          .setTitle('🔥 NOS ULTRAPASSARAM 🔥')
-          .setColor(ALERT_COLOR)
-          .setDescription(
-            `${c.flag} **${c.label}** — perdemos posicao pra uma cidade nao-santa!`,
-          )
-          .addFields(
-            {
-              name: '🟡 Nossa cidade',
-              value:
-                '```\n' +
-                `${c.code} ${truncate(santaName, MAX_NAME_LEN)}: ${santaBoosts} boosts` +
-                ` (top ${santaOldPos} → top ${santaNewPos})` +
-                '\n```',
-              inline: false,
-            },
-            {
-              name: '⚠️ Quem nos passou',
-              value:
-                '```\n' +
-                `${c.code} ${truncate(otherName, MAX_NAME_LEN)}: ${passerBoosts} boosts` +
-                ` (${fromTxt} → top ${otherNewPos})` +
-                '\n```',
-              inline: false,
-            },
-          )
-          .setFooter({ text: `Alerta gerado as ${now}` });
-
-        await channel.send({ embeds: [embed] });
-        log(`  🔥 PASSE ${c.label}: ${otherName} passou ${santaName}`);
-
-        // DM identica pro cargo de boost
-        try {
-          const { sent, failed } = await dmRoleMembers(
-            client,
-            RUSH_DM_ROLE_ID,
-            { embeds: [embed] },
-          );
-          log(`  📩 DM passe ${c.label}: ${sent} enviadas, ${failed} falhas`);
-        } catch (err) {
-          log(`  Erro DM passe ${c.label}: ${err.message}`);
+        // Confirmado: otherName passou santaName. Agrega.
+        let bucket = passesByPasser.get(otherName);
+        if (!bucket) {
+          bucket = {
+            passerOldPos: otherOldPos,
+            passerNewPos: otherNewPos,
+            passerBoosts: getBoosts(otherNewInfo),
+            santasPassadas: [],
+          };
+          passesByPasser.set(otherName, bucket);
         }
+        bucket.santasPassadas.push({
+          name: santaName,
+          oldPos: santaOldPos,
+          newPos: santaNewPos,
+          boosts: getBoosts(santaNewInfo),
+        });
+      }
+    }
+
+    if (passesByPasser.size === 0) continue;
+
+    // 1 embed por PASSER, listando todas as santas que ele passou
+    for (const [passerName, bucket] of passesByPasser) {
+      const fromTxt =
+        bucket.passerOldPos === null ? 'fora do top 20' : `top ${bucket.passerOldPos}`;
+
+      // Ordena santas por posicao nova (top 1 primeiro)
+      bucket.santasPassadas.sort((a, b) => a.newPos - b.newPos);
+
+      const santasLines = bucket.santasPassadas.map(
+        (s) =>
+          `${c.code} ${truncate(s.name, MAX_NAME_LEN)}: ${s.boosts} boosts` +
+          ` (top ${s.oldPos} → top ${s.newPos})`,
+      );
+
+      const qty = bucket.santasPassadas.length;
+      const titleEmoji = qty > 1 ? '🔥🔥' : '🔥';
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${titleEmoji} NOS ULTRAPASSARAM ${titleEmoji}`)
+        .setColor(ALERT_COLOR)
+        .setDescription(
+          `${c.flag} **${c.label}** — ` +
+            (qty === 1
+              ? 'perdemos posicao pra uma cidade nao-santa!'
+              : `**${qty} cidades santa** foram passadas pela mesma cidade nao-santa!`),
+        )
+        .addFields(
+          {
+            name: '⚠️ Quem nos passou',
+            value:
+              '```\n' +
+              `${c.code} ${truncate(passerName, MAX_NAME_LEN)}: ${bucket.passerBoosts} boosts` +
+              ` (${fromTxt} → top ${bucket.passerNewPos})` +
+              '\n```',
+            inline: false,
+          },
+          {
+            name: qty === 1 ? '🟡 Nossa cidade ultrapassada' : `🟡 Nossas ${qty} cidades ultrapassadas`,
+            value: '```\n' + santasLines.join('\n') + '\n```',
+            inline: false,
+          },
+        )
+        .setFooter({ text: `Alerta gerado as ${now}` });
+
+      await channel.send({ embeds: [embed] });
+      log(`  🔥 PASSE ${c.label}: ${passerName} passou ${qty} santa(s): ${bucket.santasPassadas.map(s => s.name).join(', ')}`);
+
+      // DM identica pro cargo de boost
+      try {
+        const { sent, failed } = await dmRoleMembers(
+          client,
+          RUSH_DM_ROLE_ID,
+          { embeds: [embed] },
+        );
+        log(`  📩 DM passe ${c.label}: ${sent} enviadas, ${failed} falhas`);
+      } catch (err) {
+        log(`  Erro DM passe ${c.label}: ${err.message}`);
       }
     }
   }
