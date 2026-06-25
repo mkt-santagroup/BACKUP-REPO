@@ -997,54 +997,67 @@ async function detectRushers(client, rankings, previous, now) {
   return rushAlertCount;
 }
 
+// Cache de fetch de membros por guild. Evita spammar opcode 8 (REQUEST_GUILD_MEMBERS)
+// no gateway - Discord limita pesado (3 requests por 60s mais ou menos).
+// Como o bot tem GuildMembers intent, novos membros entram no cache via eventos
+// (GUILD_MEMBER_ADD) automaticamente; so precisamos do fetch inicial.
+const _membersFetchedAt = new Map(); // guildId -> timestamp ms
+const MEMBERS_FETCH_TTL = 10 * 60 * 1000; // 10 min entre fetches do mesmo guild
+
+async function ensureMembersLoaded(guild) {
+  const last = _membersFetchedAt.get(guild.id) || 0;
+  if (Date.now() - last < MEMBERS_FETCH_TTL) return true; // cache valido
+  try {
+    await guild.members.fetch();
+    _membersFetchedAt.set(guild.id, Date.now());
+    return true;
+  } catch (err) {
+    // Se falhou por rate limit mas o cache previo existe, segue usando ele
+    if (guild.members.cache.size > 0) {
+      log(`  [DM] Fetch falhou (${err.message}) mas guild ja tem ${guild.members.cache.size} membros em cache, usando o que tem.`);
+      // Marca como "recente" pra nao retentar imediato e pegar mais rate limit
+      _membersFetchedAt.set(guild.id, Date.now());
+      return true;
+    }
+    log(`  [DM] Erro ao listar membros do guild ${guild.id}: ${err.message}`);
+    return false;
+  }
+}
+
 async function dmRoleMembers(client, roleId, payload) {
   let sent = 0;
   let failed = 0;
   const guilds = [...client.guilds.cache.values()];
-  log(`  [DM] Bot esta em ${guilds.length} guild(s). Procurando cargo ${roleId}...`);
 
   for (const guild of guilds) {
     let role;
     try {
       role = await guild.roles.fetch(roleId);
     } catch (err) {
-      log(`  [DM] Guild ${guild.name} (${guild.id}): erro ao buscar cargo: ${err.message}`);
       continue;
     }
-    if (!role) {
-      log(`  [DM] Guild ${guild.name} (${guild.id}): cargo nao existe aqui.`);
-      continue;
-    }
+    if (!role) continue;
 
-    log(`  [DM] Cargo encontrado em ${guild.name}. Buscando membros...`);
-    try {
-      await guild.members.fetch();
-    } catch (err) {
-      log(`  [DM] Erro ao listar membros do guild ${guild.id}: ${err.message}`);
-      log(`  [DM] (Verifique se "Server Members Intent" esta ativo no Developer Portal)`);
-      continue;
-    }
+    // Garante membros carregados (com cache de 10min pra nao bater rate limit)
+    const ok = await ensureMembersLoaded(guild);
+    if (!ok) continue;
 
     const members = [...role.members.values()];
-    log(`  [DM] ${members.length} membro(s) com o cargo em ${guild.name}.`);
     if (members.length === 0) {
-      log(`  [DM] Ninguem tem o cargo! Verifique se o ID ${roleId} esta correto.`);
+      log(`  [DM] Ninguem tem o cargo ${roleId} em ${guild.name}.`);
+      return { sent, failed };
     }
 
     for (const member of members) {
-      if (member.user.bot) {
-        log(`  [DM] Pulando bot: ${member.user.tag}`);
-        continue;
-      }
+      if (member.user.bot) continue;
       try {
         await member.send(payload);
         sent++;
-        log(`  [DM] ✓ Enviado para ${member.user.tag}`);
       } catch (err) {
         failed++;
-        log(`  [DM] ✗ Falhou p/ ${member.user.tag}: ${err.message}`);
+        log(`  [DM] Falhou p/ ${member.user.tag}: ${err.message}`);
       }
-      await sleep(300); // evita rate-limit do Discord
+      await sleep(300); // evita rate-limit de HTTP /channels (envio de msg)
     }
     return { sent, failed }; // achou o role neste guild, nao precisa olhar os outros
   }
@@ -1176,6 +1189,19 @@ async function main() {
     setDiscordLogClient(client); // ativa o forward de erros pro canal de log
     log(`Bot logado como ${client.user.tag}`);
     log(`Erros sao reportados em DM/canal #${ERROR_LOG_CHANNEL_ID}`);
+
+    // Pre-aquece o cache de membros de cada guild (1x no boot, depois GUILD_MEMBER_ADD
+    // mantem atualizado via gateway). Evita o spam de opcode 8 a cada DM.
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        await guild.members.fetch();
+        _membersFetchedAt.set(guild.id, Date.now());
+        log(`  Pre-cache: ${guild.name} -> ${guild.members.cache.size} membros`);
+      } catch (err) {
+        log(`  Falha pre-cache em ${guild.name}: ${err.message}`);
+      }
+    }
+
     log('SantaGroup cities por pais:');
     for (const [country, list] of Object.entries(SANTA_BY_COUNTRY)) {
       log(`  ${country}: ${list.length ? list.join(', ') : '(nenhuma)'}`);
