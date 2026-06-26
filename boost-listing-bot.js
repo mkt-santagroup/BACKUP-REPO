@@ -1208,7 +1208,7 @@ function validateConfig() {
   if (missing.length) throw new Error(`Variaveis faltando no .env: ${missing.join(', ')}`);
 }
 
-async function main() {
+async function start() {
   validateConfig();
 
   const client = new Client({
@@ -1298,7 +1298,13 @@ async function main() {
   await client.login(DISCORD_BOT_TOKEN);
 }
 
-main().catch((err) => {
-  console.error('Erro fatal:', err.message);
-  process.exit(1);
-});
+// Auto-start so quando rodado direto (node boost-listing-bot.js). No modo merged,
+// o start.js eh quem chama start() — assim bot, api e backup vivem no mesmo Node.
+if (require.main === module) {
+  start().catch((err) => {
+    console.error('Erro fatal:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { start };

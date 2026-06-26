@@ -20,10 +20,8 @@ const API_KEY = process.env.API_KEY || '';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 200;
 
-if (!API_KEY) {
-  console.error('[api] FATAL: API_KEY nao setado no .env');
-  process.exit(1);
-}
+// A checagem de API_KEY foi movida pra start() pra nao matar o processo inteiro
+// quando esse modulo for carregado por start.js (modo merged com bot+backup).
 
 // Comparacao timing-safe pra evitar timing attacks
 function safeKeyEquals(a, b) {
@@ -188,10 +186,20 @@ app.get('/', (req, res) => {
   });
 });
 
-// Em ambientes tipo Railway, escutar em 0.0.0.0 (nao 127.0.0.1) eh
-// obrigatorio pro proxy externo conseguir alcancar o app.
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[api] Listening on 0.0.0.0:${PORT}`);
-  console.log(`[api] (process.env.PORT=${process.env.PORT || '<nao setado>'})`);
-  console.log(`[api] Try: curl http://localhost:${PORT}/BR`);
-});
+function start() {
+  if (!API_KEY) {
+    console.error('[api] FATAL: API_KEY nao setado no .env — API nao vai subir');
+    return;
+  }
+  // Em ambientes tipo Railway, escutar em 0.0.0.0 (nao 127.0.0.1) eh
+  // obrigatorio pro proxy externo conseguir alcancar o app.
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[api] Listening on 0.0.0.0:${PORT}`);
+    console.log(`[api] (process.env.PORT=${process.env.PORT || '<nao setado>'})`);
+    console.log(`[api] Try: curl http://localhost:${PORT}/BR`);
+  });
+}
+
+if (require.main === module) start();
+
+module.exports = { start };

@@ -141,7 +141,7 @@ async function runBackup() {
   }
 }
 
-(async () => {
+async function start() {
   validateConfig();
 
   if (process.argv.includes('--once')) {
@@ -156,4 +156,15 @@ async function runBackup() {
 
   cron.schedule(BACKUP_CRON, runBackup, { timezone: BACKUP_TIMEZONE });
   log(`Aguardando proximo backup agendado (cron "${BACKUP_CRON}" / TZ ${BACKUP_TIMEZONE})...`);
-})();
+}
+
+// Auto-start so quando rodado direto (node index.js). Quando importado por
+// start.js (modo merged), o start.js eh quem invoca.
+if (require.main === module) {
+  start().catch((err) => {
+    console.error('Erro fatal:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { start, runBackup };
