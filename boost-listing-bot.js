@@ -44,12 +44,27 @@ const {
   BOOSTS_LIST_CRON = '* * * * *',
   DAILY_LIST_CRON = '0 21 * * *',
   BACKUP_TIMEZONE = 'America/Sao_Paulo',
+  NOTIFY_MUTED_COUNTRIES = 'SA',
 } = process.env;
 
 const ZAPI_NUMBERS = (ZAPI_NOTIFICATION_NUMBERS || '')
   .split(',')
   .map((n) => n.trim())
   .filter(Boolean);
+
+// Paises silenciados: continuam normalmente na LISTAGEM (embeds de boosts,
+// posicoes e daily list), mas nao disparam nenhuma notificacao - alteracao de
+// posicao, ultrapassagem, rush, DM pro cargo e WhatsApp.
+// Padrao: SA (Arabia/Orizon) - apitava o dia todo e poluia os canais.
+// Pra religar: NOTIFY_MUTED_COUNTRIES= (vazio) no .env, ou tire o label da lista.
+const NOTIFY_MUTED = new Set(
+  NOTIFY_MUTED_COUNTRIES.split(',')
+    .map((x) => x.trim().toUpperCase())
+    .filter(Boolean),
+);
+function isMuted(countryLabel) {
+  return NOTIFY_MUTED.has(countryLabel);
+}
 
 // cfx-fetcher ja normaliza case/separator (es_ES == es-es == ES-ES).
 // extraLocales agora so pra ALIAS REAL (ex: en-UK <-> en-GB sao codigos diferentes).
@@ -649,6 +664,7 @@ async function detectAndPostChanges(client, rankings, previous) {
       for (const c of COUNTRIES) {
         const santas = SANTA_BY_COUNTRY[c.label] || [];
         if (!santas.length) continue;
+        if (isMuted(c.label)) continue;
 
         const oldMap = previous[c.label] || {};
         const newMap = currentState[c.label] || {};
@@ -781,6 +797,7 @@ async function detectAndPostPasses(client, previous, currentState, now) {
 
   for (const c of COUNTRIES) {
     if (!(SANTA_BY_COUNTRY[c.label] || []).length) continue;
+    if (isMuted(c.label)) continue;
     const oldMap = previous[c.label] || {};
     const newMap = currentState[c.label] || {};
 
@@ -903,6 +920,7 @@ async function detectRushers(client, rankings, previous, now) {
   for (const c of COUNTRIES) {
     const santas = SANTA_BY_COUNTRY[c.label] || [];
     if (!santas.length) continue;
+    if (isMuted(c.label)) continue;
 
     const ranking = rankings[c.label] || [];
     if (ranking.length === 0) continue;
@@ -1238,6 +1256,11 @@ async function start() {
     for (const [country, list] of Object.entries(SANTA_BY_COUNTRY)) {
       log(`  ${country}: ${list.length ? list.join(', ') : '(nenhuma)'}`);
     }
+    log(
+      `Notificacoes silenciadas: ${
+        NOTIFY_MUTED.size ? [...NOTIFY_MUTED].join(', ') : '(nenhuma)'
+      } - continuam na listagem, so nao geram alerta/DM/WhatsApp.`,
+    );
     log(
       `Rush alerts: ativos quando santa eh top 1 com >= ${MIN_BOOSTS_FOR_RUSH_ALERT} boosts e rusher chega a <= ${(RUSH_DIFF_PERCENT * 100).toFixed(0)}% de gap. DM para cargo ${RUSH_DM_ROLE_ID}.`,
     );
